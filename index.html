@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>مولِّد JSON من أسطر مُدرجة بـ |</title>
+<style>
+  :root{--bd:#e6e6e6;--bg:#f8fafc}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  header{padding:16px;border-bottom:1px solid var(--bd);background:var(--bg)}
+  h1{margin:0 0 6px;font-size:20px}
+  main{max-width:1100px;margin:auto;padding:16px;display:grid;gap:12px}
+  .card{border:1px solid var(--bd);border-radius:12px;background:#fff;overflow:hidden}
+  .card>.hd{padding:10px 12px;border-bottom:1px solid var(--bd);font-weight:600}
+  .card>.bd{padding:12px}
+  textarea{width:100%;min-height:160px;padding:10px;border:1px solid var(--bd);border-radius:10px;resize:vertical;font-family:ui-monospace,Consolas,Monaco,monospace}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{padding:10px 14px;border:1px solid var(--bd);border-radius:10px;background:#fff;cursor:pointer}
+  .btn.primary{background:#111;color:#fff;border-color:#111}
+  label{display:block;margin-bottom:6px;font-size:13px}
+  small{color:#666}
+  /* Force LTR for JSON output so English/URLs align left and read correctly */
+  #out{direction:ltr;text-align:left}
+</style>
+</head>
+<body>
+<header>
+  <h1>مولِّد JSON من قائمة أفعال مفصولة بـ <code>|</code></h1>
+  <div><small>الصيغة لكل سطر: <code>lemma | root | pastA | presA | imper | pastP | presP | masdar(s) | english</code></small></div>
+</header>
+
+<main>
+  <section class="card">
+    <div class="hd">المدخلات</div>
+    <div class="bd">
+      <label>ألصِق السطور هنا (واحد في كل سطر):</label>
+      <textarea id="inp" placeholder="مثال:
+أَنْعَمَ | ن-ع-م | أَنْعَمَ | يُنْعِمُ | أَنْعِمْ | أُنْعِمَ | يُنْعَمُ | إِنْعَامٌ | to bestow favor
+وَدَّ | و-د-د | وَدَّ | يَوَدُّ | وُدَّ | يُوَدُّ | مَوَدَّةٌ | to love, to wish"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" id="gen">توليد JSON</button>
+        <button class="btn" id="copy">نسخ JSON</button>
+        <button class="btn" id="dl">تنزيل JSON</button>
+        <button class="btn" id="clear">مسح</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="hd">المخرَج (JSON)</div>
+    <div class="bd">
+      <textarea id="out" readonly></textarea>
+    </div>
+  </section>
+</main>
+
+<script>
+/* ===== Unicode helpers ===== */
+const LEADING_COMBINING = /^[\u064B-\u065F\u0670]+/; // harakat, sukun, shadda, dagger alif
+
+function cleanLemma(raw){
+  if(!raw) return "";
+  let s = raw.replace(/\s+/g," ").trim();
+  s = s.replace(LEADING_COMBINING,"");
+  return s;
+}
+function chooseKey(lemma, pastA){
+  const t = (lemma||"").trim();
+  if(!t) return (pastA||"").trim();
+  if(LEADING_COMBINING.test(t)) return (pastA||"").trim();
+  return t;
+}
+
+/* ===== English helpers (only to generate gloss strings; not stored as an "english" object) ===== */
+function normalizeBase(en){
+  if(!en) return "";
+  let base = en.split(/[;,]/)[0].replace(/\(.*?\)/g,"").trim();
+  base = base.replace(/^to\s+/i,"").trim();
+  return base;
+}
+function splitVerbPhrase(base){
+  const tokens = base.split(/\s+/);
+  const verb = tokens[0] || "";
+  const rest = tokens.slice(1).join(" ");
+  return {verb, rest: rest ? " " + rest : ""};
+}
+function gerund(v){
+  if(!v) return "";
+  if(/ie$/i.test(v)) return v.slice(0,-2)+"ying";
+  if(/e$/i.test(v) && !/ee$/i.test(v)) return v.slice(0,-1)+"ing";
+  if(/^[^aeiou]*[aeiou][^aeiou]$/i.test(v)) return v+v.slice(-1)+"ing";
+  return v+"ing";
+}
+function past(v){
+  if(!v) return "";
+  if(/e$/i.test(v)) return v+"d";
+  if(/y$/i.test(v) && !/[aeiou]y$/i.test(v)) return v.slice(0,-1)+"ied";
+  if(/^[^aeiou]*[aeiou][^aeiou]$/i.test(v)) return v+v.slice(-1)+"ed";
+  return v+"ed";
+}
+function s3(v){
+  if(!v) return "";
+  if(/(s|sh|ch|x|z)$/i.test(v)) return v+"es";
+  if(/y$/i.test(v) && !/[aeiou]y$/i.test(v)) return v.slice(0,-1)+"ies";
+  return v+"s";
+}
+function glosses(rawEn){
+  const base = normalizeBase(rawEn);            // e.g., "bestow favor"
+  const {verb, rest} = splitVerbPhrase(base);   // verb="bestow", rest=" favor"
+  const gPast = past(verb)+rest;                // "bestowed favor"
+  const gPres = s3(verb)+rest;                  // "bestows favor"
+  const gProg = gerund(verb)+rest;              // "bestowing favor"
+  const gPP   = (verb.endsWith("e") ? verb+"d" : past(verb)); // PP without rest to avoid awkwardness
+  return {
+    base, gPast, gPres, gProg, gPP,
+    imp: `${verb ? verb.charAt(0).toUpperCase()+verb.slice(1) : "Do"}${rest}!`,
+    agent: `the one who ${gPres}`,
+    patient_generic: `the one/thing that received the action of ${base}`,
+    time_place: `time/place of ${gProg}`,
+    instrument: `tool/instrument used for ${gProg}`,
+    nisba: `related to ${base}`,
+    pass_past: `it was ${gPP}`,                 // "it was bestowed"
+    pass_pres: `it is being ${gPP}`             // "it is being bestowed"
+  };
+}
+
+/* ===== Parse one line =====
+0 lemma | 1 root | 2 pastA | 3 presA | 4 imper | 5 pastP | 6 presP | 7 masdar(s) | 8 english
+*/
+function parseLine(line){
+  const parts = line.split("|").map(s=>s.trim()).filter(Boolean);
+  if(parts.length < 8) return null;
+  const [lemmaRaw, root, pastA, presA, imper, pastP, presP, masdars, englishRaw] =
+        [parts[0],parts[1],parts[2],parts[3],parts[4],parts[5],parts[6],parts[7],parts[8]||""];
+  const lemma = cleanLemma(lemmaRaw);
+  return { lemma, root, pastA, presA, imper, pastP, presP, masdars, englishRaw };
+}
+
+function buildRecord(o){
+  const en = glosses(o.englishRaw);
+  const mas = (o.masdars||"").split(/[،,]+/).map(s=>s.trim()).filter(Boolean);
+  const withGloss = (ar, gloss) => (ar ? `${ar} — ${gloss}` : "—");
+
+  return {
+    root: o.root,
+    pos: ["فعل"],
+    verb: {
+      "فعل ماضٍ معروف": withGloss(o.pastA, `he ${en.gPast}`),
+      "فعل مضارع معروف": withGloss(o.presA, `he ${en.gPres} / he is ${en.gProg}`),
+      "فعل أمر": withGloss(o.imper, en.imp),
+      "فعل ماضٍ مجهول": withGloss(o.pastP, en.pass_past),
+      "فعل مضارع مجهول": withGloss(o.presP, en.pass_pres)
+    },
+    masdar: mas.length ? mas : ["—"],
+    nominals: {
+      "اسم فاعل": "— " + en.agent,
+      "اسم مفعول": "— " + en.patient_generic,
+      "اسم زمان/مكان": "— " + en.time_place,
+      "اسم آلة": "— " + en.instrument,
+      "نِسبة": "— " + en.nisba
+    },
+    translation: {
+      en: (o.englishRaw||"").trim(),
+      source: "Almaany — " + (o.lemma || o.pastA),
+      url: "https://www.almaany.com/en/dict/ar-en/" + encodeURIComponent(o.lemma || o.pastA)
+    }
+  };
+}
+
+function generate(){
+  const lines = document.getElementById("inp").value
+                 .split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const out = {};
+  lines.forEach(line=>{
+    const p = parseLine(line);
+    if(!p) return;
+    let key = chooseKey(p.lemma, p.pastA);
+    if(!key) key = (p.pastA||"").trim();
+    out[key] = buildRecord(p);
+  });
+  return out;
+}
+
+/* ===== UI ===== */
+const outEl = document.getElementById("out");
+document.getElementById("gen").onclick = ()=>{
+  const obj = generate();
+  outEl.value = JSON.stringify(obj, null, 2);
+};
+document.getElementById("copy").onclick = async ()=>{
+  const data = outEl.value || JSON.stringify(generate(),null,2);
+  await navigator.clipboard.writeText(data);
+  alert("تم نسخ JSON");
+};
+document.getElementById("dl").onclick = ()=>{
+  const data = outEl.value || JSON.stringify(generate(),null,2);
+  const blob = new Blob([data], {type:"application/json;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "words.json"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 500);
+};
+document.getElementById("clear").onclick = ()=>{
+  document.getElementById("inp").value = "";
+  outEl.value = "";
+};
+</script>
+</body>
+</html>
